@@ -1,0 +1,5 @@
+{
+  "name": "Gemini AI - Virtual Try-On",
+  "description": "An application that uses AI to dress a model with clothing from a product image. Supports virtual try-on, regeneration, and inpainting for precise edits.",
+  "requestFramePermissions": []
+}
