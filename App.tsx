@@ -40,7 +40,11 @@ const App: FC = () => {
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [isMaskLoading, setIsMaskLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  
+  // Edit States
   const [editMode, setEditMode] = useState<boolean>(false);
+  const [maskEditMode, setMaskEditMode] = useState<boolean>(false);
+  const [isZoomed, setIsZoomed] = useState<boolean>(false);
 
   // Inpainting state
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -48,8 +52,16 @@ const App: FC = () => {
   const [inpaintingTool, setInpaintingTool] = useState<'brush' | 'eraser'>('brush');
   const [brushSize, setBrushSize] = useState<number>(40);
   
-  const generatedImageRef = useRef<HTMLImageElement>(null);
+  // Mask editing state
+  const maskCanvasRef = useRef<HTMLCanvasElement>(null);
+  const [isMaskDrawing, setIsMaskDrawing] = useState(false);
+  const [maskTool, setMaskTool] = useState<'brush' | 'eraser'>('brush');
+  const [maskBrushSize, setMaskBrushSize] = useState<number>(40);
 
+  const generatedImageRef = useRef<HTMLImageElement>(null);
+  const maskDisplayRef = useRef<HTMLDivElement>(null);
+
+  // Effect for inpainting canvas setup
   useEffect(() => {
     if (editMode && canvasRef.current && generatedImageRef.current) {
       const canvas = canvasRef.current;
@@ -80,9 +92,44 @@ const App: FC = () => {
       }
     }
   }, [editMode]);
+  
+  // Effect for mask editing canvas setup
+  useEffect(() => {
+    if (maskEditMode && maskCanvasRef.current && maskDisplayRef.current) {
+      const canvas = maskCanvasRef.current;
+      const container = maskDisplayRef.current;
+      const context = canvas.getContext('2d');
 
-  const getCanvasCoordinates = (event: React.MouseEvent<HTMLCanvasElement>): { x: number, y: number } => {
-    const canvas = canvasRef.current!;
+      const setCanvasSize = () => {
+        if (container.clientWidth > 0 && container.clientHeight > 0) {
+          canvas.width = container.clientWidth;
+          canvas.height = container.clientHeight;
+          if (context) {
+            context.fillStyle = 'black';
+            context.fillRect(0, 0, canvas.width, canvas.height);
+            if (clothingMask) {
+              const maskImg = new Image();
+              maskImg.src = clothingMask;
+              maskImg.onload = () => {
+                context.drawImage(maskImg, 0, 0, canvas.width, canvas.height);
+              };
+            }
+          }
+        }
+      };
+
+      setCanvasSize();
+      const resizeObserver = new ResizeObserver(setCanvasSize);
+      resizeObserver.observe(container);
+
+      return () => {
+        resizeObserver.disconnect();
+      };
+    }
+  }, [maskEditMode, clothingMask]);
+
+
+  const getCanvasCoordinates = (event: React.MouseEvent<HTMLCanvasElement>, canvas: HTMLCanvasElement): { x: number, y: number } => {
     const rect = canvas.getBoundingClientRect();
     return {
       x: (event.clientX - rect.left) / rect.width * canvas.width,
@@ -90,41 +137,65 @@ const App: FC = () => {
     };
   };
 
+  // Inpainting Draw Handlers
   const startDrawing = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const context = canvasRef.current?.getContext('2d');
     if (!context) return;
-    const { x, y } = getCanvasCoordinates(e);
+    const { x, y } = getCanvasCoordinates(e, canvasRef.current!);
     context.beginPath();
     context.moveTo(x, y);
     setIsDrawing(true);
   };
-
   const finishDrawing = () => {
     const context = canvasRef.current?.getContext('2d');
     if (!context) return;
     context.closePath();
     setIsDrawing(false);
   };
-
   const draw = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (!isDrawing) return;
     const context = canvasRef.current?.getContext('2d');
     if (!context) return;
-
-    const { x, y } = getCanvasCoordinates(e);
-    
+    const { x, y } = getCanvasCoordinates(e, canvasRef.current!);
     context.globalCompositeOperation = inpaintingTool === 'brush' ? 'source-over' : 'destination-out';
     context.strokeStyle = inpaintingTool === 'brush' ? 'rgba(239, 68, 68, 0.6)' : 'rgba(0,0,0,1)';
-    context.fillStyle = inpaintingTool === 'brush' ? 'rgba(239, 68, 68, 0.6)' : 'rgba(0,0,0,1)';
     context.lineWidth = brushSize;
     context.lineCap = 'round';
     context.lineJoin = 'round';
-
     context.lineTo(x, y);
     context.stroke();
   };
   
-  const generateMask = (): Promise<string> => {
+  // Mask Draw Handlers
+  const startMaskDrawing = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const context = maskCanvasRef.current?.getContext('2d');
+    if (!context) return;
+    const { x, y } = getCanvasCoordinates(e, maskCanvasRef.current!);
+    context.beginPath();
+    context.moveTo(x, y);
+    setIsMaskDrawing(true);
+  };
+  const finishMaskDrawing = () => {
+    const context = maskCanvasRef.current?.getContext('2d');
+    if (!context) return;
+    context.closePath();
+    setIsMaskDrawing(false);
+  };
+  const drawMask = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!isMaskDrawing) return;
+    const context = maskCanvasRef.current?.getContext('2d');
+    if (!context) return;
+    const { x, y } = getCanvasCoordinates(e, maskCanvasRef.current!);
+    context.globalCompositeOperation = 'source-over';
+    context.strokeStyle = maskTool === 'brush' ? 'white' : 'black';
+    context.lineWidth = maskBrushSize;
+    context.lineCap = 'round';
+    context.lineJoin = 'round';
+    context.lineTo(x, y);
+    context.stroke();
+  };
+
+  const generateMaskFromCanvas = (): Promise<string> => {
     return new Promise((resolve) => {
         const userCanvas = canvasRef.current;
         if (!userCanvas) return resolve("");
@@ -150,8 +221,8 @@ const App: FC = () => {
       const file = e.target.files[0];
       if (type === 'model') {
         setModelImage(file);
-        setClothingMask(null); // Reset mask if model changes
-        setGeneratedImage(null); // Reset result
+        setClothingMask(null);
+        setGeneratedImage(null);
       }
       if (type === 'product') setProductImage(file);
     }
@@ -266,7 +337,7 @@ const App: FC = () => {
           setError("请输入在选定区域需要修改的描述。");
           return;
       }
-      const maskBase64 = await generateMask();
+      const maskBase64 = await generateMaskFromCanvas();
       if (!maskBase64) {
           setError("无法创建编辑蒙版。请尝试在图像上重新绘制。");
           return;
@@ -281,6 +352,18 @@ const App: FC = () => {
       const prompt = `In the first image, redraw the area marked in black in the second image (the mask). The new content should be: "${inpaintingPrompt}". Blend it seamlessly with the rest of the image.`;
   
       callGeminiAPI(parts, prompt);
+  };
+  
+  const handleSaveMask = () => {
+    if (maskCanvasRef.current) {
+        setClothingMask(maskCanvasRef.current.toDataURL('image/png'));
+    }
+    setMaskEditMode(false);
+  };
+
+  const handleClearMask = () => {
+      setClothingMask(null);
+      setMaskEditMode(false);
   };
 
   const ImageUploader: FC<{
@@ -335,18 +418,54 @@ const App: FC = () => {
             <div className="space-y-6">
                  <div className="bg-slate-100 dark:bg-slate-800 p-4 rounded-lg shadow-inner w-full flex flex-col items-center justify-center min-h-[300px]">
                     <h3 className="text-lg font-semibold mb-2 text-slate-700 dark:text-slate-300">2. 服装蒙版</h3>
-                    <div className="w-full aspect-square flex items-center justify-center relative bg-slate-200 dark:bg-slate-700 rounded-md overflow-hidden">
+                    <div ref={maskDisplayRef} className="w-full aspect-square flex items-center justify-center relative bg-slate-200 dark:bg-slate-700 rounded-md overflow-hidden">
                         {isMaskLoading && (
                             <div className="flex flex-col items-center gap-2 text-sky-500">
                                 <svg className="animate-spin h-8 w-8" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
                                 <span>正在生成蒙版...</span>
                             </div>
                         )}
-                        {!isMaskLoading && !clothingMask && ( <span className="text-slate-500 text-center px-4">请先上传模特图，然后点击“生成服装蒙版”</span> )}
+                        {!isMaskLoading && !clothingMask && !maskEditMode && ( <span className="text-slate-500 text-center px-4">请先上传模特图，然后点击“生成服装蒙版”</span> )}
+                        
                         {!isMaskLoading && clothingMask && (
-                            <img src={clothingMask} alt="Clothing mask" className="max-w-full max-h-full object-contain bg-slate-200 dark:bg-slate-900" />
+                            <img src={clothingMask} alt="Clothing mask" className="max-w-full max-h-full object-contain bg-black" style={{ visibility: maskEditMode ? 'hidden' : 'visible' }} />
+                        )}
+
+                        {maskEditMode && (
+                             <canvas
+                                ref={maskCanvasRef}
+                                className="absolute top-0 left-0 w-full h-full cursor-crosshair"
+                                onMouseDown={startMaskDrawing}
+                                onMouseUp={finishMaskDrawing}
+                                onMouseOut={finishMaskDrawing}
+                                onMouseMove={drawMask}
+                             />
                         )}
                     </div>
+                    {!maskEditMode ? (
+                        <div className="flex items-center gap-4 mt-3">
+                            <button onClick={() => setMaskEditMode(true)} disabled={isMaskLoading || isLoading || !modelImage} className="text-sm px-3 py-1 bg-slate-600 text-white font-semibold rounded-lg shadow-md hover:bg-slate-700 disabled:bg-slate-400 disabled:cursor-not-allowed transition-colors">编辑蒙版</button>
+                            <button onClick={handleClearMask} disabled={isMaskLoading || isLoading || !clothingMask} className="text-sm px-3 py-1 bg-red-600 text-white font-semibold rounded-lg shadow-md hover:bg-red-700 disabled:bg-slate-400 disabled:cursor-not-allowed transition-colors">清除蒙版</button>
+                        </div>
+                    ) : (
+                        <div className="w-full p-2 border-t border-slate-200 dark:border-slate-700 mt-3 flex flex-col gap-3">
+                           <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-2">
+                                <div className='font-medium'>工具：</div>
+                                <div className='flex gap-2'>
+                                    <button onClick={() => setMaskTool('brush')} className={`px-3 py-1 rounded-md text-sm ${maskTool === 'brush' ? 'bg-sky-600 text-white' : 'bg-slate-200 dark:bg-slate-600'}`}>画笔 (白)</button>
+                                    <button onClick={() => setMaskTool('eraser')} className={`px-3 py-1 rounded-md text-sm ${maskTool === 'eraser' ? 'bg-sky-600 text-white' : 'bg-slate-200 dark:bg-slate-600'}`}>橡皮擦 (黑)</button>
+                                </div>
+                                <div className='flex items-center gap-2'>
+                                    <label htmlFor="mask-brush-size" className='text-sm'>大小：</label>
+                                    <input type="range" id="mask-brush-size" min="5" max="100" value={maskBrushSize} onChange={e => setMaskBrushSize(Number(e.target.value))} className='w-24' />
+                                </div>
+                           </div>
+                           <div className="flex items-center justify-center gap-4 mt-2">
+                                <button onClick={handleSaveMask} className="px-4 py-2 bg-green-600 text-white font-semibold rounded-lg shadow-md hover:bg-green-700 transition-colors">保存蒙版</button>
+                                <button onClick={() => setMaskEditMode(false)} className="px-4 py-2 bg-slate-500 text-white font-semibold rounded-lg shadow-md hover:bg-slate-600 transition-colors">取消</button>
+                           </div>
+                        </div>
+                    )}
                 </div>
                  <div className="bg-slate-100 dark:bg-slate-800 p-4 rounded-lg shadow-inner w-full flex flex-col items-center justify-center min-h-[300px]">
                     <h3 className="text-lg font-semibold mb-2 text-slate-700 dark:text-slate-300">4. 生成结果</h3>
@@ -360,7 +479,7 @@ const App: FC = () => {
                     {!isLoading && !generatedImage && ( <span className="text-slate-500">结果将在此处显示</span> )}
                     {!isLoading && generatedImage && (
                         <>
-                        <img ref={generatedImageRef} src={generatedImage} alt="Generated result" className="max-w-full max-h-full object-contain" style={{ visibility: editMode ? 'hidden' : 'visible' }} />
+                        <img ref={generatedImageRef} src={generatedImage} alt="Generated result" className="max-w-full max-h-full object-contain cursor-zoom-in" style={{ visibility: editMode ? 'hidden' : 'visible' }} onClick={() => setIsZoomed(true)} />
                         {editMode && (
                             <div className='absolute inset-0 w-full h-full'>
                                 <img src={generatedImage} alt="background" className="w-full h-full object-contain pointer-events-none" />
@@ -395,7 +514,7 @@ const App: FC = () => {
                 <div className="flex-1 text-center flex flex-col items-center">
                     <h4 className="font-bold text-lg mb-2">第一步：创建蒙版</h4>
                     <p className="text-sm text-slate-500 dark:text-slate-400 mb-3 min-h-[40px]">首先，为模特身上的服装区域生成一个蒙版。</p>
-                    <button onClick={handleGenerateMask} disabled={isMaskLoading || isLoading || !modelImage} className="px-5 py-2.5 bg-indigo-600 text-white font-semibold rounded-lg shadow-md hover:bg-indigo-700 disabled:bg-slate-400 disabled:cursor-not-allowed transition-colors w-full sm:w-auto">
+                    <button onClick={handleGenerateMask} disabled={isMaskLoading || isLoading || !modelImage || maskEditMode} className="px-5 py-2.5 bg-indigo-600 text-white font-semibold rounded-lg shadow-md hover:bg-indigo-700 disabled:bg-slate-400 disabled:cursor-not-allowed transition-colors w-full sm:w-auto">
                         {isMaskLoading ? '正在生成蒙版...' : '生成服装蒙版'}
                     </button>
                 </div>
@@ -418,7 +537,7 @@ const App: FC = () => {
                                 <option value="3:2">3:2</option>
                             </select>
                         </div>
-                        <button onClick={() => handleGenerate()} disabled={isLoading || isMaskLoading || !modelImage || !productImage || !clothingMask} className="px-5 py-2.5 bg-sky-600 text-white font-semibold rounded-lg shadow-md hover:bg-sky-700 disabled:bg-slate-400 disabled:cursor-not-allowed transition-colors">
+                        <button onClick={() => handleGenerate()} disabled={isLoading || isMaskLoading || !modelImage || !productImage || !clothingMask || maskEditMode || editMode} className="px-5 py-2.5 bg-sky-600 text-white font-semibold rounded-lg shadow-md hover:bg-sky-700 disabled:bg-slate-400 disabled:cursor-not-allowed transition-colors">
                             {isLoading ? '正在生成...' : '生成'}
                         </button>
                     </div>
@@ -484,8 +603,21 @@ const App: FC = () => {
             </div>
            )
         )}
-
       </main>
+      
+      {isZoomed && generatedImage && (
+          <div 
+            className="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center z-50 cursor-zoom-out" 
+            onClick={() => setIsZoomed(false)}
+          >
+            <img 
+              src={generatedImage} 
+              alt="Zoomed result" 
+              className="max-w-[95vw] max-h-[95vh] object-contain rounded-lg shadow-2xl"
+              onClick={(e) => e.stopPropagation()} // Prevent closing when clicking on the image itself
+            />
+          </div>
+        )}
     </div>
   );
 };
